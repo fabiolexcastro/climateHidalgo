@@ -1,0 +1,463 @@
+---
+title: "Análisis geográfico desde una perspectiva climática en Hidalgo"
+author: "Monica Garcia - Universidad Autónoma del Estado de Hidalgo"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    css: style.css
+    theme: united
+    toc_depth: 3
+    highlight: tango
+---
+
+
+```{r, echo = FALSE, out.width = '100px'}
+library(htmltools)
+htmltools::img(src = './logo3.png', 
+               alt = 'logo', 
+               style = 'position:absolute; top:0; right:0; padding:10px;')
+```
+
+```{r setup, warning=FALSE, include = FALSE}
+require(pacman)
+pacman::p_load(htmltools, terra, gtools, ggnewscale, geodata, ggrepel, hrbrthemes, kableExtra, stringr, sf, tidyverse, fs, colorspace, foreign, cowplot, ggspatial, kableExtra, readxl, rnaturalearthdata, rnaturalearth)
+pacman::p_load(OpenStreetMap, classInt, ggrepel, ggspatial, sf, fs, colourpicker, glue, openxlsx, readxl, tidyverse, classInt, ggspatial, hrbrthemes, RColorBrewer, osmdata, dbscan, geosphere, ggmap, osrm, terra, exactextractr, httr, spatialEco, ggpubr)
+set_config(use_proxy(url="10.3.100.207", port = 8080))
+options(knitr.kable.NA = '')
+```
+
+## Introducción
+
+El Estado de Hidalgo, y especificamente la región de Tula de Allende en México, se encuentran inmersos en un contexto climático dinámico y en constante evolución. La variablidad climática y el cambio climático representan desafíos cada vez más urgentes y relevantes para la comunidad local, así como para el desarrollo sostenible de la región en su conjunto; en este análisis, proponemos explorar en profundidad la situación climática actual y futura de esta área, utilizando como base fundamental datos históricos de bases de datos secundarias (como CHIRPS, CHIRTS, Worldclim, CMIP6, entre otros) y datos de cambio climático propiamente del sexto informe del cambio climático (IPCC: Panel Intergubermantal de Cambio Climático).
+
+El objetivo principal de este estudio es comprender la interacción entre la variablidad climática y el cambio climático en el estado de Hidalgo, centrándonos en particular en el municipio de Tula de Allende. Para ello, emplearemos una amplia gama de herramientas analíticas, incluyendo la estimación de índices climáticos relevantes en relación al estrés humano y agricultura; la estimación de tendencias históricas y proyecciones futuras; y la evaluación de posibles impactos en diversos aspectos socioeconómicos y ambientales.
+
+Estge análiss se presenta en un momento crucial, en el que la necesidad de tomar medidas concretas para adaptarse y mitigar los efectos del cambio climático se hace cada vez más evidente. A través de la exploración detallada de los datos y la información proporcionada por el IPCC, buscamos proporiconar una base sólida para la toma de decisiones informadas y la formulación de políticas climáticas efectivas a nivel local y regional.
+
+En última instancia, este análisis aspira a contribuir al desarrollo de estrategias de adaptación y resiliencia que permitan a la comunidad de Tula de Allende y al Estado de Hidalgo enfrentar los desafíos climáticos venideros de manera efectiva y sostenible, salvaguardando al mismo tiempo la integridad de su entorno natural y el bienestar de sus habitantes.
+
+### Zona de estudio
+
+El Estado de Hidalgo se encuentra en la región central de México, limitando al norte con los estados de San Luís Potosí y Veracruz, al este con Veracruz, al sur con Puebla, al suroeste con el Estado de México y al oeste con Querétaro; su topografía es variada, con la presencia de sierras, valles, mesetas y llanuras; en el norte del estado se encuentran las estribaciones de la Sierra Madre Oriental, mientras que en el sur se extiende en el Valle de Mezquitarl. Las elevaciones más destacadas son el cerro de las Navajas, el Cerro de la Magueyera y el Cerro de San Juan, entre otros. Por su parte el clima de Hidalgo varia desde semiseco hasta templado subhúmedo. En las zonas más elevadas del norte de estado, el clima tiende a ser ma's frío, con temperaturas mínimas en inviertno que pueden descender por debajo de los 0°C. En las zonas más bajas del Valle del Mezquital, el clima tiende a ser más cálido y seco, con temperaturas que pueden superar los 30°C en verano.
+
+En la siguiente figura se ilustra la ubicación geográfica de Tula de Allende e Hidalgo geográficamente.
+
+```{r mainMap, warning = FALSE, message = FALSE, echo = FALSE, fig.align = 'center',  fig.cap = "Ubicación geográfica de Tula de Allende dentro del Estado de Hidalgo", fig.pos = "top"}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+## Function to use
+rs2tb <- function(x){x %>% terra::crop(., hdlg) %>% terra::mask(., hdlg) %>% terra::as.data.frame(., xy = T) %>% as_tibble() %>% gather(var, value, -c(x, y)) %>% mutate(month = as.numeric(parse_number(var))) %>% inner_join(., tibble(month = 1:12, month_abb = c('Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic')), by = 'month') %>% mutate(month_abb = factor(month_abb, levels = c('Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic')))}
+
+## Administrative data
+wrld <- rnaturalearth::ne_countries(scale = 50, returnclass = 'sf')
+mex0 <- filter(wrld, sov_a3 == 'MEX')
+mex1 <- geodata::gadm(country = 'MEX', level = 1, path = './tmpr')
+mex2 <- geodata::gadm(country = 'MEX', level = 2, path = './tmpr')
+hdlg <- mex1[mex1$NAME_1 == 'Hidalgo',]
+mex1 <- st_as_sf(mex1)
+hdlg <- st_as_sf(hdlg)
+tula <- mex2[mex2$NAME_2 == 'Tula de Allende',]
+
+## Coordinates
+crds <- mex1 %>% st_centroid() %>% st_coordinates() %>% as_tibble() %>% mutate(name = mex1$NAME_1) %>% setNames(c('x', 'y', 'name'))
+
+## To fit the basemap
+extn <- ext(hdlg)
+map  <- openmap(c(extn[4], extn[1]), c(extn[3], extn[2]), zoom = 12, type = 'bing', mergeTiles = TRUE)
+map.latlon <- openproj(map, projection = '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+## To make the map
+g.hdlg <- autoplot(map.latlon, alpha = 0.5) + 
+  geom_sf(data = st_as_sf(hdlg), fill = NA, col = 'grey90', inherit.aes = FALSE) +
+  geom_sf(data = st_as_sf(tula), aes(fill = NAME_2), col = 'darkred', alpha = 0.5, inherit.aes = FALSE) + 
+  geom_sf(data = mex1, fill = NA, col = 'grey99', inherit.aes = FALSE) +
+  geom_text(data = crds, aes(x = x, y = y, label = name)) +
+  coord_sf(xlim = ext(hdlg)[1:2], ylim = ext(hdlg)[3:4]) + 
+  labs(x = 'Lon', y = 'Lat', fill = '') +
+  theme_light() + 
+  theme(axis.text.y = element_text(size = 5, angle = 90, hjust = 0.5), 
+        axis.text.x = element_text(size = 5),
+        legend.position = 'bottom',
+        axis.title = element_text(family = 'bold')) 
+g.hdlg
+hdlg <- vect(hdlg)
+hdlg.proj <- terra::project(hdlg, 'EPSG:6371')
+tula.proj <- terra::project(tula, 'EPSG:6371')
+hdlg.mpio <- mex2[mex2$NAME_1 == 'Hidalgo',]
+hdlg.mpio <- st_as_sf(hdlg.mpio)
+
+pobl <- read.xlsx('./tbl/pop_v2.xlsx')
+pobl <- pobl %>% mutate(porc = Pop2020 / sum(Pop2020) * 100)
+pobl <- pobl %>% mutate(porc = round(porc, 1))
+pobl <- pobl %>% arrange(desc(Pop2020))
+
+# Join between the shapefile and the table 
+pobl.shpf <- inner_join(hdlg.mpio, pobl, by = c('NAME_2' = 'Mpio'))
+# st_write(pobl.shpf, './gpkg/popHidalgo_2020.gpkg')
+
+# To classify 
+brks <- classIntervals(var = pobl.shpf$Pop2020, n = 5, style = 'pretty')
+brks <- brks$brks
+pobl.shpf <- mutate(pobl.shpf, classPop = findInterval(x = pobl.shpf$Pop2020, vec = brks, all.inside = T))
+lbls.pobl <- tibble(classPop = 1:5, min = brks[1:5], max = brks[2:6], intervalPop = paste0(min, '-', max))
+pobl.shpf <- inner_join(pobl.shpf, lbls.pobl, by = 'classPop')
+pobl.shpf <- mutate(pobl.shpf, intervalPop = factor(intervalPop, levels = lbls.pobl$intervalPop))
+
+crds.tula <- tula %>% centroids() %>% crds() %>% as_tibble() %>% mutate(name = 'Tula de Allende')
+
+# To make the map 
+gpop <- ggplot() + 
+  geom_sf(data = pobl.shpf, aes(fill = intervalPop)) + 
+  scale_fill_manual(values = brewer.pal(n = 5, name = 'YlOrBr')) + 
+  geom_sf(data = mex1, fill = NA, col = 'grey40') +
+  coord_sf(xlim = ext(hdlg)[1:2], ylim = ext(hdlg)[3:4]) + 
+  labs(x = '', y = '', fill = 'Población (habitantes)') + 
+  geom_text(data = crds.tula, aes(x = x, y = y, label = name)) +
+  theme_light() + 
+  theme(legend.position = 'bottom', 
+        legend.key.width = unit(3, 'line'),
+        text = element_text('Segoe UI'),
+        axis.text.x = element_text(size = 6), 
+        axis.text.y = element_text(size = 6, angle = 90, hjust = 0.5)) +
+  guides(fill = guide_legend( 
+    direction = 'horizontal',
+    keyheight = unit(3.15, units = "mm"),
+    keywidth = unit(15, units = "mm"),
+    title.position = 'top',
+    title.hjust = 0.5,
+    label.hjust = .5,
+    nrow = 1,
+    byrow = T,
+    reverse = F,
+    label.position = "bottom"
+  )) 
+gpop
+```
+
+El área total del Estado de Hidalgo es de 2'082.144 hectáreas (ha, en adelante), mientras que por su parte Tula de Allende tiene un área geográfica total de 33.611 ha, siendo así Tula de Allende el 1.61% del territorio total de Hidalgo.
+
+### Clima de la región
+
+El tiempo atmosférico se trata de las condiciones diarias que experimentamos, como si ahce sol, lluev, está nublado, hace frío o calor, en el momento, y el cual puede cambiar rápidamente por condiciones meteorológicas; ahora bien, el clima es como la personalidad del tiempo; se refeire a las condiciones del aire, la temperatura, la lluvia, la humedad y el viento que generalmente se mantienen en una región durante un largo periodo de tiempo (30 años usualmente); por ejemplo, si un lugar suele ser caluroso y seco durante mucho tiempo, se dice que tiene un clima "cálido - seco".
+
+Ahora bien, en relación a bases de datos climáticas se encuentra la de Worldclim v2.1 desarollada por Fick y Hijmans (Fick & Hijmans, 2017) la cual ha sido altamente citada en diversos estudios de orden climático; está base entonces fue de uso para identificar y conocer el clima de la región, identificar cuáles son los meses con mayor y menor lluvia, así como también identificar el rango de la temperatura mínima y promedio a nivel mensual y anual. En la siguiente figura se ilustra el comportamiento de la precipitación acumulada para Hidalgo.
+
+```{r fucntionsformaps, include = FALSE}
+make.map <- function(tbl, clr, nme){
+  
+  # tbl <- prec.tble; clr <- 'BrBG'; nme = 'Precipitación (mm)'
+  # cat('>>> To make the map\n')
+  ggp <- ggplot() + 
+    geom_tile(data = tbl, aes(x = x, y = y, fill = value)) + 
+    facet_wrap(~month_abb) + 
+    scale_fill_gradientn(colors = brewer.pal(n = 9, name = clr)) + 
+    coord_sf(xlim = ext(hdlg)[1:2], ylim = ext(hdlg)[3:4]) + 
+    labs(x = '', y = '', fill = nme) +
+    theme_minimal() + 
+    theme(
+      legend.position = 'bottom', 
+      strip.text = element_text(face = 'bold'), 
+      axis.text.x = element_text(size = 5), 
+      axis.text.y = element_text(size = 5, angle = 90, hjust = 0.5),
+      legend.key.width = unit(3, 'line')
+    ) +
+    guides(fill = guide_legend( 
+      direction = 'horizontal',
+      keyheight = unit(1.15, units = "mm"),
+      keywidth = unit(15, units = "mm"),
+      title.position = 'top',
+      title.hjust = 0.5,
+      label.hjust = .5,
+      nrow = 1,
+      byrow = T,
+      reverse = F,
+      label.position = "bottom"
+    )) 
+  
+  # cat('Map done!\n')
+  return(ggp)
+  
+}
+vles.tul <- function(stk){
+  stk %>% terra::crop(., tula) %>% terra::mask(., tula) %>% terra::as.data.frame() %>% summary()
+}
+```
+
+```{r precmap, include = TRUE}
+prec <- geodata::worldclim_country(country = 'MEX', var = 'prec', path = './tmpr')
+names(prec) <- glue('prec_{1:12}')
+prec.tble <- rs2tb(x = prec)
+gmap.prec <- make.map(tbl = prec.tble, clr = 'BrBG', nme = 'Precipitación (mm)')
+gmap.prec
+```
+
+Como se puede apreciar en la anterior figura, la precipitación registra una temporada lluvia entre los meses de junio a septiempre, aquí se dan valores de hasta 500 mm en la zona nor-este de Hidalgo; mientras que los meses más secos son enero a marzo, aquí la lluvia es de entre 0 y 150 mm; por su parte en Tula de Allende la precipitación tiene un comportamiento unimodal, donde el mes con mayores lluvias es julio con hasta 157 mm en la zona oeste, mientrass que el mes más seco es febrero con solo 7 mm en promedio de lluvia.
+
+Ahora bien, en la siguiente figura se ilustra el comportamiento de la temperatura máxima y mínima para la región, indicando además que esta base de datos corresponde a la de Worldclim.
+
+```{r tasmprec, include = TRUE}
+## Minimum temperature
+tmin <- geodata::worldclim_country(country = 'MEX', var = 'tmin', path = './tmpr')
+names(tmin) <- glue('tmin_{1:12}')
+tmin.tble <- rs2tb(x = tmin)
+gmap.tmin <- make.map(tbl = tmin.tble, clr = 'YlOrRd', nme = 'Temperatura mínima')
+gmap.tmin
+
+## Maximum temperature
+tmax <- geodata::worldclim_country(country = 'MEX', var = 'tmax', path = './tmpr')
+names(tmax) <- glue('tmax_{1:12}')
+tmax.tble <- rs2tb(x = tmax)
+gmap.tmax <- make.map(tbl = tmax.tble, clr = 'YlOrRd', nme = 'Temperatura máxima')
+gmap.tmax
+```
+
+Como se puede apreciar, la temperatura mínima en el Estado de Hidalgo va desde los 5°C hasta los 20°C, siendo los meses más fríos desde diciembre hasta marzo, mientras que los meses más cálidos para esta variable van desde abril a octubre, con temperaturas mínimas de hasta 20°C; por su parte, la temperatura máxima; tiene un rango desde los 15°C hasta los 35°C, valores mucho más altos respecto a la temperatura mínima, siendo de igual manera los meses más fríos los de diciembre a enero, y los más mcálidos dese abril hasta octubre. Como comentario general para ambas variables la zona norte es mucho más cálida respecto ala zona sur-este.
+
+```{r zonal_tula, include = TRUE}
+prec.tula <- terra::crop(prec, tula) %>% terra::mask(., tula)
+tmin.tula <- terra::crop(tmin, tula) %>% terra::mask(., tula)
+tmax.tula <- terra::crop(tmax, tula) %>% terra::mask(., tula)
+prec.znal <- exact_extract(x = prec, y = st_as_sf(tula), fun = 'mean')
+tmin.znal <- exact_extract(x = tmin, y = st_as_sf(tula), fun = 'mean')
+tmax.znal <- exact_extract(x = tmax, y = st_as_sf(tula), fun = 'mean')
+
+tble.clma <- gather(as_tibble(cbind(prec.znal, tmin.znal, tmax.znal)), var, value)
+tble.clma <- mutate(tble.clma, var = gsub('mean.', '', var))
+tble.clma <- separate(tble.clma, col = 'var', into = c('variable', 'month.num'), sep = '_')
+tble.clma <- spread(tble.clma, variable, value)
+tble.clma <- inner_join(
+  tble.clma, 
+  tibble(
+    month.num = as.character(1:12), 
+    month.abb = c('Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic')
+  ), 
+  by = 'month.num'
+)
+tble.clma <- mutate(tble.clma, month.abb = factor(month.abb, levels = c('Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic')))
+
+## Precipitación
+tble.prec <- tble.clma %>% mutate(variable = 'Prec (mm)')
+
+gprec <- ggplot(
+  data = tble.prec,
+  aes(
+    x = month.abb, 
+    y = prec, 
+    fill = variable
+  )
+) +
+  geom_col(
+    position = 'dodge'
+  )  + 
+  scale_fill_manual(
+    values = '#2C8F9E'
+  ) + 
+  ggtitle(
+    label = 'Comportamiento de la precipitación histórica en Tula de Allende'
+  ) +
+  labs(
+    x = 'Mes', 
+    y = 'Precip. (mm)', 
+    fill = '', 
+    caption = 'Adaptado de WorldClim v2.0'
+  ) +
+  theme_light() +
+  theme(
+    plot.title = element_text(
+      face = 'bold', 
+      hjust = 0.5
+    ), 
+    text = element_text(
+      family = 'sans'
+    )
+  )
+  
+## Temperatura mínima y máxima
+tble.tasm <- tble.clma %>% dplyr::select(month.abb, tmin, tmax) %>% mutate(tavg = (tmin + tmax) / 2)
+tble.tasm <- tble.tasm %>% gather(variable, value, -month.abb)
+tble.tasm <- tble.tasm %>% inner_join(., tibble(variable = c('tmin', 'tavg', 'tmax'), var = c('Temp. Min.', 'Temp. Prom.', 'Temp. Max.')))
+tble.tasm <- tble.tasm %>% mutate(var = factor(var, levels = c('Temp. Min.', 'Temp. Prom.', 'Temp. Max.')))
+
+gtasm <- ggplot(
+  data = tble.tasm, 
+  aes(
+    x = month.abb, 
+    y = value, 
+    col = var, 
+    group = var
+  )
+) + 
+  geom_line(
+    size = 1.3
+  ) +
+  scale_color_manual(
+    values = brewer.pal(n = 3, name = 'YlOrRd')
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, 30, 5), 
+    labels = seq(0, 30, 5)
+  ) +
+  labs(
+    x = 'Mes',
+    y = 'Temperatura (C)', 
+    col = '',
+    caption = 'Adaptado de WorldClim v2.0'
+  ) +
+  ggtitle(
+    label = 'Comportamiento de la temperatura historica en Tula de Allende'
+  ) +
+  theme_light() + 
+  theme(
+    legend.position = 'bottom', 
+    text = element_text(
+      family = 'sans'
+    ), 
+    plot.title = element_text(
+      hjust = 0.5, 
+      face = 'bold'
+    )
+  )
+
+gprec
+gtasm
+
+```
+
+Como se puede apreciar en la figura de la precipitación, el més con mayor pluviosidad es julio con algo más de 100 mm, mientras que los meses más secos son diciembre a febrero, aquí esta variable no sobrepasa los 15 mm de lluvia mensual; el comportamiento entonces de la precipitación es unimodal teniendo la temporada húmeda en los meses de junio a agosto y la temporada más seca de diciembre a febrero. En cuanto a la temperatura se tienen valores de entre 0°C y 28°C, en todos los casos el mes con mayor temperatura es el mes de mayo con valores de hasta 28°C para la temperatura máxima, 18°C para la temperatura promedio y 11°C para la temperatura mínima; se evidencia una gran distancia en °C entre las distintas temperaturas, lo que hace esta variable tener mucha variabilidad entre sus extremos.
+
+### Variabilidad climática
+
+Aquí se hace uso de los datos climáticos históricos de precipitación y temperatura para la región objeto de estudio, como lo es Tula de Allende; aquí se descargo esta información a partir del uso del lenguaje de programación de R, con ayuda propia de la librería de R llamada climateR.
+
+Referencia: Abatzoglou, J.T., S.Z. Dobrowski, S.A. Parks, K.C. Hegewisch, 2018, Terraclimate, a high-resolution global dataset of monthly climate and climatic water balance from 1958-2015, Scientific Data, URL: <https://www.climatologylab.org/terraclimate.html>
+
+```{r downTC, include = TRUE}
+library(climateR)
+tmax.tc <- getTerraClim(AOI = hdlg, varname = 'tmax', startDate = '1980-01-01', endDate = '2022-12-31')
+tmax.tc <- tmax.tc$tmax
+tmin.tc <- getTerraClim(AOI = hdlg, varname = 'tmin', startDate = '1980-01-01', endDate = '2022-12-31')
+tmin.tc <- tmin.tc$tmin
+prec.tc <- getTerraClim(AOI = hdlg, varname = 'ppt', startDate = '1980-01-01', endDate = '2022-12-31')
+prec.tc <- prec.tc$ppt
+
+tmax.tc <- terra::crop(tmax.tc, hdlg)
+tmax.tc <- terra::mask(tmax.tc, hdlg)
+tmin.tc <- terra::crop(tmin.tc, hdlg)
+tmin.tc <- terra::mask(tmin.tc, hdlg)
+prec.tc <- terra::crop(prec.tc, hdlg)
+prec.tc <- terra::mask(prec.tc, hdlg)
+
+srtm <- geodata::elevation_30s('MEX', path = './tmpr')
+srtm <- terra::crop(srtm, hdlg)
+srtm <- terra::mask(srtm, hdlg)
+
+# tclm <- map(.x = 1:nlyr(tmax.tc), .f = function(i){
+#   
+#   ## Start
+#   # cat('>>> To process layer #', i, '\n')
+#   
+#   ## Tmax
+#   tmx <- tmax.tc[[i]]
+#   tmx.nme <- names(tmx)
+#   names(tmx) <- 'value'
+#   tmx <- spatialEco::raster.downscale(x = srtm, y = tmx)
+#   tmx <- tmx$downscale
+#   names(tmx) <- tmx.nme
+#   
+#   ## Tmin
+#   tmn <- tmin.tc[[i]]
+#   tmn.nme <- names(tmn)
+#   names(tmn) <- 'value'
+#   tmn <- spatialEco::raster.downscale(x = srtm, y = tmn)
+#   tmn <- tmn$downscale
+#   names(tmn) <- tmn.nme
+#   
+#   ## Prec
+#   ppt <- prec.tc[[i]]
+#   ppt.nme <- names(ppt)
+#   names(ppt) <- 'value'
+#   ppt <- spatialEco::raster.downscale(x = srtm, y = ppt)
+#   ppt <- ppt$downscale
+#   names(ppt) <- ppt.nme
+#   
+#   ## To write the rasters
+#   out <- './tif/tc_down'
+#   terra::writeRaster(x = tmx, filename = glue('{out}/{names(tmx)}.tif'), overwrite = TRUE)
+#   terra::writeRaster(x = tmn, filename = glue('{out}/{names(tmn)}.tif'), overwrite = TRUE)
+#   terra::writeRaster(x = ppt, filename = glue('{out}/{names(ppt)}.tif'), overwrite = TRUE)
+#   
+#   ## Finish 
+#   # cat('Done!\n')
+#   
+# })
+
+## To list the results 
+ 
+
+# Raster to table --------------------------
+rs2tb <- function(x){
+  y <- x %>% 
+    terra::as.data.frame(., xy = T) %>% 
+    as_tibble() %>% 
+    mutate(gid = 1:nrow(.)) %>% 
+    gather(var, value, -c(gid, x, y)) %>% 
+    mutate(
+      variable = str_sub(var, 1, 4),
+      date = str_sub(var, 6, 15), 
+      date = as.Date(x = date, format = '%Y-%m-%d')
+    ) %>% 
+    dplyr::select(
+      gid, x, y, variable, date, value
+    ); Sys.sleep(120)
+  return(y)
+}
+
+tmin.tc.tbl <- rs2tb(x = tmin.tc)
+tmax.tc.tbl <- rs2tb(x = tmax.tc)
+
+## Precipitation to table 
+prec.tc.tbl <- prec.tc %>% 
+  terra::as.data.frame(., xy = T) %>% 
+  as_tibble() %>% 
+  mutate(gid = 1:nrow(.)) %>% 
+  gather(var, value, -c(gid, x, y)) %>% 
+  mutate(
+    variable = str_sub(var, 1, 3),
+    date = str_sub(var, 5, 14), 
+    date = as.Date(x = date, format = '%Y-%m-%d')
+  ) %>% 
+  dplyr::select(
+    gid, x, y, variable, date, value
+  ) %>% 
+  mutate(variable = 'prec')
+
+## Join the three tables into only one 
+# tmin.tc.tbl
+tc.tbl <- list(
+  tmin.tc.tbl, 
+  tmax.tc.tbl, 
+  prec.tc.tbl
+) %>% 
+  bind_rows() %>% 
+  spread(
+    variable, value
+  )
+
+
+saveRDS(object = tc.tbl, file = './rds/tc_tmin-tmax-prec.rds')
+
+```
+
+Tener como referencia que los datos originales vienen a resolución de 5 km, lo que hace un poco gruesa la resolución para un análisis a nivel regional / local, con lo cual nos hemos apoyado en técnicas de regresión para realizar un desescalado de la información climática, pudiendo llevar así la información espacial desde 5 km hasta 1 km.
+
+```{r graphDownscaling, include = TRUE}
+knitr::include_graphics("./png/maps/process_downscaling.jpg")
+```
+
+<!-- <div id="bg"> -->
+<!--   <img src="D:/asesorias/class/2024/15 monica garcia/v1/climateHidalgo/png/maps/process_downscaling.jpg" alt=""> -->
+<!-- </div>   -->
+
+Como se observa en la anterior figura, primero se tenía las variables climáticas (temperatura mínima, máxima y precipitación) a resolución de 5 km, a esto se le suma el modelo de elevación digital a resolución de 1 km y se procede a realizar el proceso de desescalado siguiendo la metodología de Evans et al (2023) descrita en su librería spatialEco (CRAN, R) de R, la cual se basa en un modelo robusto de regresión, el resultado final lo logramos ver en el costado derecho de la anterior figura, la cual es la temperatura, en este caso, a resolución de 1 km. Este proceso se aplica a todas las capas espaciales desde 1980 hasta el 2023 a nivel mensual, calculando así 1548 capas (516 por cada variable); estos resultados del desescalado fueron posteriormente procesados para la estimación de la variabilidad climática y pendiente temporal, esto con la ayuda de la metodología de Mann-Kendall descrita en la librería trend (Pohlert Thorsten, 2023) de R.
+
+**Knit** `echo = FALSE`
