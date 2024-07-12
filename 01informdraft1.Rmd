@@ -57,6 +57,7 @@ hdlg <- mex1[mex1$NAME_1 == 'Hidalgo',]
 mex1 <- st_as_sf(mex1)
 hdlg <- st_as_sf(hdlg)
 tula <- mex2[mex2$NAME_2 == 'Tula de Allende',]
+hdlg.mex2 <- mex2[mex2$NAME_1 == 'Hidalgo',]
 
 ## Coordinates
 crds <- mex1 %>% st_centroid() %>% st_coordinates() %>% as_tibble() %>% mutate(name = mex1$NAME_1) %>% setNames(c('x', 'y', 'name'))
@@ -459,5 +460,119 @@ knitr::include_graphics("./png/maps/process_downscaling.jpg")
 <!-- </div>   -->
 
 Como se observa en la anterior figura, primero se tenía las variables climáticas (temperatura mínima, máxima y precipitación) a resolución de 5 km, a esto se le suma el modelo de elevación digital a resolución de 1 km y se procede a realizar el proceso de desescalado siguiendo la metodología de Evans et al (2023) descrita en su librería spatialEco (CRAN, R) de R, la cual se basa en un modelo robusto de regresión, el resultado final lo logramos ver en el costado derecho de la anterior figura, la cual es la temperatura, en este caso, a resolución de 1 km. Este proceso se aplica a todas las capas espaciales desde 1980 hasta el 2023 a nivel mensual, calculando así 1548 capas (516 por cada variable); estos resultados del desescalado fueron posteriormente procesados para la estimación de la variabilidad climática y pendiente temporal, esto con la ayuda de la metodología de Mann-Kendall descrita en la librería trend (Pohlert Thorsten, 2023) de R.
+
+Ahora bien, con lo datos desescalados, como se muestra en la siguiente figura se realizó el análisis de pendiente siguiendo la metodologái descrita por Mann-Kendall, esto con la finalidad de identificar cuál ha sido la magnitud del cambio para variables como temperatura mínima, máxima y precipitación. 
+
+```{r sloped, include = TRUE}
+library(pacman); p_load(terra, fs, sf, tidyverse, glue, ggspatial, trend, RColorBrewer)
+# fles <- as.character(dir_ls('./tif/tc_down'))
+# prec <- grep('ppt', fles, value = T)
+# tmin <- grep('tmin', fles, value = T)
+# tmax <- grep('tmax', fles, value = T)
+# mk.tb <- function(fls){
+#   fls <- prec
+#   nms <- basename(fls)
+#   dte <- str_split(nms, pattern = '_') %>% map_chr(2)
+#   yrs <- as.numeric(unique(str_sub(dte, 1, 4)))
+#   tbl <- map(.x = 1:length(yrs), .f = function(y){
+#     cat('To process:', yrs[y], '\n')
+#     rst <- grep(yrs[y], fls, value = T) %>% rast()
+#     tbl <- terra::as.data.frame(rst, xy = T) %>% as_tibble() %>% gather(var, value, -c(x, y)) %>% separate(col = 'var', into = c('variable', 'date', 'total'), sep = '_')
+#     return(tbl)
+#   })
+#   tbl <- bind_rows(tbl)
+#   return(tbl)
+# }
+# prec.tble <- mk.tb(prec)
+# tmin.tble <- mk.tb(tmin)
+# tmax.tble <- mk.tb(tmax)
+
+tc.tbl <- readRDS(file = './rds/tc_tmin-tmax-prec.rds')
+
+## To create the slope function
+calc.slpe <- function(vrb){
+  cat('To process: ', vrb, '\n')
+  tbl <- dplyr::select(tc.tbl, gid, x, y, date, all_of(vrb))
+  tbl <- setNames(tbl, c('gid', 'x', 'y', 'date', 'value'))
+  mks <- function(i){sl <- tbl %>% filter(gid == i) %>% pull(value) %>% ts() %>% sens.slope(., conf.level = 0.90); return(sl$estimates)}
+  mkp <- function(i){sl <- tbl %>% filter(gid == i) %>% pull(value) %>% ts() %>% sens.slope(., conf.level = 0.90); return(sl$p.value)}
+  slp <- tbl %>% group_by(gid) %>% dplyr::summarise(slope = mks(value), pvalue = mkp(value)) %>% ungroup()
+  return(slp)
+}
+
+## To apply the function
+# prec.slp <- calc.slpe(vrb = 'prec') %>% setNames(c('gid', 'slope_prec', 'pvalue_prec'))
+# tmin.slp <- calc.slpe(vrb = 'tmin') %>% setNames(c('gid', 'slope_tmin', 'pvalue_tmin'))
+# tmax.slp <- calc.slpe(vrb = 'tmax') %>% setNames(c('gid', 'slope_tmax', 'pvalue_tmax'))
+
+# slpe <- list(prec.slp, tmin.slp, tmax.slp) %>% reduce(., inner_join)
+# crds <- distinct(tc.tbl[,c('gid', 'x', 'y')])
+# slpe <- inner_join(slpe, crds, by = 'gid')
+# slpe <- dplyr::select(slpe, gid, x, y, everything())
+# write.csv(slpe, './tbl/slope/slope_prec-tmin-tmax.csv', row.names = FALSE)
+
+slpe <- read_csv('./tbl/slope/slope_prec-tmin-tmax.csv')
+slpe <- as.data.frame(slpe)
+
+## To download the SRTM 
+mskr <- terra::rast(slpe[,c('x', 'y', 'slope_prec')])
+srtm <- geodata::elevation_30s(country = 'MEX', path = './tmpr')
+srtm <- terra::crop(srtm, hdlg) %>% terra::mask(., hdlg)
+
+## Temperatura minima 
+make.map <- function(varb, clrs, ttle){
+  
+  # varb <- 'slope_tmin'
+  # clrs <- 'YlOrRd'
+  # ttle <- 'Temperatura mínima'
+  
+  cat('To process ', varb, '\n')
+  slp <- dplyr::select(slpe, x, y, all_of(varb)) %>% setNames(c('x', 'y', 'value'))
+  slp <- rast(slp)
+  rst <- spatialEco::raster.downscale(srtm, slp)$downscale
+  rst <- setNames(terra::as.data.frame(rst, xy = T), c('x', 'y', 'value'))
+  
+  gmp <- ggplot() + 
+    geom_tile(data = rst, aes(x = x, y = y, fill = value)) +
+    scale_fill_gradientn(colors = brewer.pal(n = 9, name = clrs)) +
+    geom_sf(data = hdlg, fill = NA, col = 'grey30') + 
+    ggtitle(label = ttle) +
+    coord_sf() +
+    theme_minimal() +
+    labs(fill = 'Pendiente', x = 'Lon', y = 'Lat') +
+    theme(legend.position = 'bottom', 
+          legend.key.width = unit(2.5, 'line'), 
+          legend.key.height = unit(0.6, 'line'), 
+          axis.text.x = element_text(size = 5), 
+          axis.text.y = element_text(angle = 90, hjust = 0.5, size = 5)) +
+    guides(fill = guide_legend( 
+    direction = 'horizontal',
+    keyheight = unit(1.15, units = "mm"),
+    keywidth = unit(15, units = "mm"),
+    title.position = 'top',
+    title.hjust = 0.5,
+    label.hjust = .5,
+    nrow = 1,
+    byrow = T,
+    reverse = F,
+    label.position = "bottom"
+  ))
+  
+  return(gmp)
+  
+}
+
+# gmap.tmin <- make.map(varb = 'slope_tmin', clrs = 'YlOrRd', ttle = 'Temperatura mínima')
+# gmap.tmax <- make.map(varb = 'slope_tmax', clrs = 'YlOrRd', ttle = 'Temperatura máxima')
+# gmap.prec <- make.map(varb = 'slope_prec', clrs = 'BrBG', ttle = 'Precipitación')
+
+# maps <- ggpubr::ggarrange(gmap.tmin, gmap.tmax, gmap.prec, ncol = 3, nrow = 1)
+# maps
+# ggsave(plot = maps, filename = './png/maps/slope_map.jpg', units = 'in', width = 11, height = 6, dpi = 300)
+```
+
+```{r slopeMaps, include = TRUE}
+knitr::include_graphics("./png/maps/slope_map.jpg")
+```
 
 **Knit** `echo = FALSE`
